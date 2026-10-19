@@ -1,0 +1,6 @@
+langgraph
+langchain
+langchain-core
+pydantic
+pydantic-settings
+python-dotenv
