@@ -33,10 +33,14 @@ def main():
     for event in final_state["timeline"]:
         print(event)
 
-    print(f"\n=== ACCUMULATED FINDINGS ({len(final_state['findings'])} total) ===")
-    for f in final_state["findings"]:
-        print(f"[{f['source'].upper()}] ({f['significance']}): {f['summary']}")
-        print(f"   Evidence: {f['evidence']}")
+    print("\n=== RANKED HYPOTHESES (DIAGNOSIS) ===")
+    for idx, hyp in enumerate(final_state["hypotheses"], start=1):
+        print(f"\nHypothesis #{idx} [Confidence: {hyp['confidence'] * 100:.0f}%]:")
+        print(f"  Description: {hyp['description']}")
+        print(f"  Mitigation : {hyp['recommended_mitigation']}")
+        print("  Supporting Evidence:")
+        for ev in hyp["supporting_evidence"]:
+            print(f"    - {ev}")
 
 if __name__ == "__main__":
     main()

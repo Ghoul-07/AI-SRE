@@ -1,7 +1,7 @@
 from typing import Any, Dict
 from pydantic import BaseModel, Field
 from ai_sre.state import IncidentState
-from ai_sre.models import get_fast_llm
+from ai_sre.models import get_fast_llm, get_reasoning_llm
 from ai_sre.tools import query_logs, query_metrics, query_deploys
 
 # Output schema for Intake
@@ -150,3 +150,49 @@ def triage_node(state: IncidentState) -> Dict[str, Any]:
           f"[Triage] Classified as {decision.category}. Routing to: {', '.join(decision.target_investigators)}"
       ],
   }
+
+
+# Structured diagnosis output
+class Hypothesis(BaseModel):
+   description:str = Field(description="Clear explaination of the suspected root cause")
+   confidence:float = Field(description="Confidence score between 0.0 and 1.0")
+   supporting_evidence: list[str] = Field(description="List of specific log, metric, or deploy evidence snippets supporting this")
+   recommended_mitigation: str = Field(description="Immediate action recommended to restore service")
+
+class DiagnosisReport(BaseModel):
+   hypotheses: list[Hypothesis] = Field(description="Ranked list of root-cause hypotheses, highest confidence first")
+   synthesis_summary: str = Field(description="Summary explaining how cross-source evidence correlates")
+
+
+def diagnosis_node(state: IncidentState) -> Dict[str, Any]:
+   """Fan-In Node: Correlates cross-source findings into ranked root-cause hypotheses."""
+   findings = state["findings"]
+   alert = state["alert"]
+   llm = get_reasoning_llm().with_structured_output(DiagnosisReport)
+
+   prompt = f"""You are the lead SRE Incident Commander and Diagnostic specialist.
+   An incident is ongoing. Review the initial alert and the evidence gathered by parallel investigators:
+
+   Alert Context:
+   {alert}
+
+   Accumulated Evidence ({len(findings)} across logs, metricsc and deploys):
+   {findings}
+
+   Synthesize the evidence across sources. Correlate timestamps, error codes, and release changes.
+   Rank root cause hypotheses by confidence and link concrete supporting evidence to each.
+   """
+
+   report: DiagnosisReport = llm.invoke(prompt)
+
+   hypotheses_data = [h.model_dump() for h in report.hypotheses]
+   top_confidence = hypotheses_data[0]["confidence"] if hypotheses_data else 0.0
+
+   return {
+        "hypotheses": hypotheses_data,
+        "timeline": [
+            f"[Diagnosis] Synthesized {len(findings)} findings into {len(hypotheses_data)} ranked hypotheses. Top confidence: {top_confidence:.2f}"
+        ]
+    }
+
+

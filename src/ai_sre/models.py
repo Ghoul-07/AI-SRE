@@ -13,8 +13,8 @@ def get_fast_llm():
   )
 
 def get_reasoning_llm():
-  """Gemini 3.8 Flash for synthesis, multi-source diagnosis, and postmortem generation."""
-  return ChatGoogleGenerativeAI(
-    model="gemini-3.8-flash",
-    temperature=0.0
+  """Reasoning model hosted on Groq for diagnosis and synthesis."""
+  return ChatGroq(
+      model="openai/gpt-oss-120b",
+      temperature=0.0,
   )
