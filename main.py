@@ -11,7 +11,6 @@ def main():
         "message": "High rate of 500 errors observed after v2.4.1 rollout"
     }
 
-    # Prepare initial state
     initial_state = {
         "incident_id": f"INC-{uuid.uuid4().hex[:6]}",
         "alert": sample_alert,
@@ -27,16 +26,17 @@ def main():
         "timeline": [f"[System] Incident created for {sample_alert['service']}"]
     }
 
-    print("Running Incident Response Graph...\n")
+    print("Running Incident Response Graph with Parallel Investigators...\n")
     final_state = app.invoke(initial_state)
 
-    print("--- Execution Summary ---")
-    print(f"Incident ID : {final_state['incident_id']}")
-    print(f"Severity    : {final_state['severity']}")
-    print(f"Category    : {final_state['category']}")
-    print("\n--- Timeline Output ---")
+    print("=== TIMELINE ===")
     for event in final_state["timeline"]:
         print(event)
+
+    print(f"\n=== ACCUMULATED FINDINGS ({len(final_state['findings'])} total) ===")
+    for f in final_state["findings"]:
+        print(f"[{f['source'].upper()}] ({f['significance']}): {f['summary']}")
+        print(f"   Evidence: {f['evidence']}")
 
 if __name__ == "__main__":
     main()
