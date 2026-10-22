@@ -51,7 +51,7 @@ class InvestigationReport(BaseModel):
 
 
 def log_investigator_node(state: IncidentState) -> Dict[str, Any]:
-    """Node: Inspects raw logs around the alert window."""
+    """Node: Inspects raw logs , incorporating targeted follow-ups queries if present."""
     service = state["alert"].get("service", "unknown")
     targeted = state.get("targeted_queries", [])
 
@@ -67,7 +67,9 @@ def log_investigator_node(state: IncidentState) -> Dict[str, Any]:
         Raw Logs:
         {raw_logs}
 
-        Extract any error patterns, exceptions, or anomalies as structured findings with exact evidence."""
+        Analyze the logs above:
+        - If errors, exceptions, or anomalies are present, extract them into structured findings with exact evidence.
+        - If NO errors or anomalies are present, you MUST still call the tool: return an empty list `findings: []` and explain in `agent_note` that no anomalies were found."""
 
     report: InvestigationReport = llm.invoke(prompt)
     findings_data = [f.model_dump() for f in report.findings]
@@ -86,13 +88,15 @@ def metrics_investigator_node(state: IncidentState) -> Dict[str, Any]:
 
     llm = get_fast_llm().with_structured_output(InvestigationReport)
     prompt = f"""You are an SRE Metrics Investigator.
-      Analyze these system and application metrics for service '{service}':
-      {telemetry}
+        Service: '{service}'
+        Alert Context:
+        {state['alert']}
+        Metrics Data:
+        {telemetry}
 
-      Alert context:
-      {state['alert']}
-
-      Extract metric anomalies and saturation patterns with exact numerical evidence."""
+        Analyze the metrics above:
+        - If metric anomalies or saturation patterns are present, extract them into structured findings with exact numerical evidence.
+        - If all metrics appear within normal operational limits, you MUST still call the tool: return `findings: []` and explain in `agent_note` that metrics look healthy."""
 
     report: InvestigationReport = llm.invoke(prompt)
 
@@ -110,10 +114,13 @@ def deploy_investigator_node(state: IncidentState) -> Dict[str, Any]:
 
     llm = get_fast_llm().with_structured_output(InvestigationReport)
     prompt = f"""You are an SRE Deploy Investigator.
-      Analyze recent deployment history for service '{service}' relative to the incident:
-      {deploy_history}
+        Service: '{service}'
+        Deploy History:
+        {deploy_history}
 
-      Identify suspect releases, rollback candidates, or schema changes."""
+        Analyze recent releases:
+        - If suspicious deploys or breaking changes are present, extract them into structured findings with commit references.
+        - If releases appear benign or routine, you MUST still call the tool: return `findings: []` and explain in `agent_note` that no suspicious deploys were found."""
 
     report: InvestigationReport = llm.invoke(prompt)
 

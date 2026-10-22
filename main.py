@@ -5,13 +5,21 @@ from ai_sre.graph import app
 
 def main():
     incident_id = f"INC-{uuid.uuid4().hex[:6]}"
+    # sample_alert = {
+    #     "service": "checkout-service",
+    #     "metric": "http_5xx_rate",
+    #     "threshold": "5%",
+    #     "current_value": "24.5%",
+    #     "timestamp": "2026-10-19T10:30:00Z",
+    #     "message": "High rate of 500 errors observed after v2.4.1 rollout",
+    # }
     sample_alert = {
         "service": "checkout-service",
-        "metric": "http_5xx_rate",
-        "threshold": "5%",
-        "current_value": "24.5%",
+        "metric": "latency_jitter",
+        "threshold": "unknown",
+        "current_value": "sporadic spikes",
         "timestamp": "2026-10-19T10:30:00Z",
-        "message": "High rate of 500 errors observed after v2.4.1 rollout",
+        "message": "Occasional latency reported by edge router; cause unclear."
     }
 
     initial_state = {

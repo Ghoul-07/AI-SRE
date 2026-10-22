@@ -2,12 +2,37 @@ from typing import Any, Dict, List
 
 # Simulated telemetry datastore
 MOCK_LOGS = [
-    {"timestamp": "2026-10-19T10:25:00Z", "service": "checkout-service", "level": "INFO", "message": "Service started successfully on port 8080"},
-    {"timestamp": "2026-10-19T10:28:12Z", "service": "checkout-service", "level": "ERROR", "message": "NullPointerException at PaymentGatewayAdapter.java:42"},
-    {"timestamp": "2026-10-19T10:29:45Z", "service": "checkout-service", "level": "ERROR", "message": "Failed to serialize payment token payload; aborting transaction"},
-    {"timestamp": "2026-10-19T10:30:02Z", "service": "checkout-service", "level": "ERROR", "message": "HTTP 500 returned to client for endpoint /api/v1/checkout"},
+    {
+        "timestamp": "2026-10-19T10:25:00Z",
+        "service": "checkout-service",
+        "level": "INFO",
+        "message": "Service started successfully on port 8080",
+    },
+    {
+        "timestamp": "2026-10-19T10:26:10Z",
+        "service": "checkout-service",
+        "level": "INFO",
+        "message": "Routine health check passed (200 OK)",
+    },
+    {
+        "timestamp": "2026-10-19T10:27:00Z",
+        "service": "checkout-service",
+        "level": "INFO",
+        "message": "Connection keep-alive ping received",
+    },
+    {
+        "timestamp": "2026-10-19T10:28:12Z",
+        "service": "checkout-service",
+        "level": "ERROR",
+        "message": "NullPointerException at PaymentGatewayAdapter.java:42",
+    },
+    {
+        "timestamp": "2026-10-19T10:29:45Z",
+        "service": "checkout-service",
+        "level": "ERROR",
+        "message": "Failed to serialize payment token payload; aborting transaction",
+    },
 ]
-
 MOCK_METRICS = {
     "checkout-service": {
         "http_5xx_rate": "24.5%",
@@ -18,18 +43,40 @@ MOCK_METRICS = {
 }
 
 MOCK_DEPLOYS = [
-    {"version": "v2.4.0", "deployed_at": "2026-10-18T14:00:00Z", "author": "dev-alice", "status": "stable"},
-    {"version": "v2.4.1", "deployed_at": "2026-10-19T10:20:00Z", "author": "dev-bob", "commit": "Update payment processor schema", "status": "deployed"},
+    {
+        "version": "v2.4.0",
+        "deployed_at": "2026-10-18T14:00:00Z",
+        "author": "dev-alice",
+        "status": "stable",
+    },
+    {
+        "version": "v2.4.1",
+        "deployed_at": "2026-10-19T06:00:00Z",
+        "author": "dev-bob",
+        "commit": "Routine documentation update",
+        "status": "deployed",
+    },
 ]
 
 
 def query_logs(service: str, query_filter: str = "") -> List[Dict[str, Any]]:
-    """Fetches recent log entries matching the service and an optional filter string."""
-    entries = [entry for entry in MOCK_LOGS if entry["service"] == service]
-    if query_filter:
-        entries = [e for e in entries if query_filter.lower() in e["message"].lower() or query_filter.lower() in e["level"].lower()]
-    return entries
+    """
+    If no query_filter is given (first pass), returns only recent top-level/INFO logs (inconclusive).
+    If query_filter is provided (targeted follow-up), searches deep logs for the keyword.
+    """
+    service_logs = [entry for entry in MOCK_LOGS if entry["service"] == service]
 
+    if not query_filter:
+        # First pass: only show non-error general noise (leaves investigators uncertain)
+        return [e for e in service_logs if e["level"] == "INFO"]
+
+    # Follow-up pass: filter by the investigator's targeted term
+    return [
+        e
+        for e in service_logs
+        if query_filter.lower() in e["message"].lower()
+        or query_filter.lower() in e["level"].lower()
+    ]
 
 def query_metrics(service: str) -> Dict[str, Any]:
     """Retrieves current operational metrics for a given target service."""
