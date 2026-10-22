@@ -1,8 +1,11 @@
-from typing import Any, Dict
+from typing import Any, Dict, Literal
 from pydantic import BaseModel, Field
+from langgraph.types import interrupt
 from ai_sre.state import IncidentState
 from ai_sre.models import get_fast_llm, get_reasoning_llm
 from ai_sre.tools import query_logs, query_metrics, query_deploys
+
+
 
 # Output schema for Intake
 class AlertEvaluation(BaseModel):
@@ -196,3 +199,78 @@ def diagnosis_node(state: IncidentState) -> Dict[str, Any]:
     }
 
 
+# Strict allowed actions list 
+ActionType = Literal["rollback_deploy", "restart_service", "scale_replicas", "clear_cache"]
+
+class ProposedAction(BaseModel):
+    action_type: ActionType = Field(description="Must be one of the allow-listed action types")
+    target_service: str = Field(description="Service targeted by the remediation")
+    parameters: Dict[str, Any] = Field(description="Specific arguments, e.g., target version or replica count")
+    expected_effect: str = Field(description="Anticipated outcome of this action on service health")
+    risk_level: Literal["low", "medium", "high"] = Field(description="Potential blast radius or operational risk")
+    rollback_plan: str = Field(description="What to do if this remediation fails")
+
+class RemediationPlan(BaseModel):
+    actions: list[ProposedAction]
+    reasoning: str = Field(description="Why this sequence of actions was chosen based on top hypothesis")
+
+
+def remediation_planner_node(state:IncidentState) -> Dict[str, Any]:
+    """Node: Formulates safe remediation steps based on the top ranked hypothesis."""
+    top_hypothesis = state["hypotheses"][0] if state["hypotheses"] else None
+    service = state["alert"].get("service", "unknown")
+
+    if not top_hypothesis:
+        return {
+            "proposed_actions": [],
+            "approval_status": "rejected",
+            "timeline": ["[Remediation Planner] No valid hypothesis to act on. Aborting remediation."]
+        }
+
+    llm = get_fast_llm().with_structured_output(RemediationPlan)
+
+    prompt = f"""You are an SRE Remediation Planner.
+        Top Root Cause Hypothesis:
+        {top_hypothesis}
+
+        Target Service: {service}
+
+        Allowed actions:
+        - rollback_deploy (requires parameter: 'target_version')
+        - restart_service
+        - scale_replicas (requires parameter: 'replicas')
+        - clear_cache
+
+        Propose a remediation plan using ONLY the allowed action types."""
+
+    plan = llm.invoke(prompt)
+    actions_data = [a.model_dump() for a in plan.actions]
+
+    return {
+       "proposed_actions" : actions_data,
+       "approval_status": "pending",
+       "timeline":[
+          f"[Remediation Planner] Proposed {len(actions_data)} action(s). Awaiting human approval."
+       ]
+    }
+   
+
+def human_approval_node(state: IncidentState) -> Dict[str, Any]:
+   """Node: Pauses graph execution and yields control to human-in-the-loop."""
+
+   pending_actions = state["proposed_actions"]
+
+   ## pauses the graph exection and waits for human input
+   human_decision = interrupt({
+      "message": "Human approval required to execute remediation.",
+      "proposed_actions":pending_actions
+   })
+
+   decision_status = human_decision.get("status", "rejected")
+   approved_action = human_decision.get("action", pending_actions[0] if pending_actions else None)
+
+   return {
+      "approval_status": decision_status,
+      "approved_action": approved_action if decision_status == "approved" else None,
+      "timeline": [f"[Human Gate] Incident Commander decision: {decision_status.upper()}"]
+   }
