@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 from langgraph.types import interrupt
 from ai_sre.state import IncidentState
 from ai_sre.models import get_fast_llm, get_reasoning_llm
-from ai_sre.tools import query_logs, query_metrics, query_deploys
+from ai_sre.tools import query_logs, query_metrics, query_deploys, execute_sandbox_action
 
 
 
@@ -274,3 +274,88 @@ def human_approval_node(state: IncidentState) -> Dict[str, Any]:
       "approved_action": approved_action if decision_status == "approved" else None,
       "timeline": [f"[Human Gate] Incident Commander decision: {decision_status.upper()}"]
    }
+
+
+## Executor and Postmortem nodes
+
+class PostmortemReport(BaseModel):
+    title: str = Field(description="Incident title with ID and service")
+    severity: str = Field(description="Incident severity level")
+    root_cause: str = Field(description="Detailed explanation of the root cause")
+    impact: str = Field(description="Summary of client and service impact")
+    remediation_summary: str = Field(description="Action taken and verification result")
+    action_items: list[str] = Field(description="Preventative follow-ups and engineering action items")
+
+
+def executor_node(state: IncidentState) -> Dict[str, Any]:
+    """Node: Executes the approved remediation against the sandbox and verifies recovery."""
+    action = state.get("approved_action")
+    if not action:
+        return {
+            "execution_result": {"status": "skipped", "reason": "No approved action found"},
+            "recovery_verified": False,
+            "timeline": ["[Executor] Skipped execution: no approved action."]
+        }
+
+    # Execute via guarded allow-listed tool
+    result = execute_sandbox_action(
+        action_type=action["action_type"],
+        target_service=action["target_service"],
+        parameters=action.get("parameters", {})
+    )
+
+    is_recovered = result.get("status") == "success" and result.get("verified_metrics", {}).get("status") == "healthy"
+
+    return {
+        "execution_result": result,
+        "recovery_verified": is_recovered,
+        "timeline": [
+            f"[Executor] Executed {action['action_type']} on {action['target_service']}. Outcome: {result.get('status').upper()}",
+            f"[Executor] Recovery verified: {is_recovered} (5xx rate dropped to {result.get('verified_metrics', {}).get('http_5xx_rate', 'N/A')})"
+        ]
+    }
+
+
+def postmortem_node(state: IncidentState) -> Dict[str, Any]:
+    """Node: Synthesizes the full incident timeline into an SRE postmortem document."""
+    llm = get_fast_llm().with_structured_output(PostmortemReport)
+
+    prompt = f"""You are a Lead SRE writing an incident postmortem report.
+        Incident Data:
+        - ID: {state.get('incident_id')}
+        - Alert: {state.get('alert')}
+        - Severity: {state.get('severity')}
+        - Category: {state.get('category')}
+        - Top Hypotheses: {state.get('hypotheses')}
+        - Approved Action: {state.get('approved_action')}
+        - Execution Result: {state.get('execution_result')}
+        - Recovery Verified: {state.get('recovery_verified')}
+        - Timeline: {state.get('timeline')}
+
+        Generate a comprehensive postmortem report following standard SRE practices."""
+
+    report: PostmortemReport = llm.invoke(prompt)
+
+    # Format into clean Markdown
+    markdown_doc = f"""# Incident Postmortem: {report.title}
+
+**Severity:** {report.severity} | **Recovery Verified:** {state.get('recovery_verified')}
+
+## Root Cause
+{report.root_cause}
+
+## Impact
+{report.impact}
+
+## Remediation Summary
+{report.remediation_summary}
+
+## Action Items
+""" + "\n".join([f"- [ ] {item}" for item in report.action_items])
+
+    return {
+        "timeline": [
+            "[Postmortem Writer] Postmortem report generated successfully."
+        ],
+        "findings": [{"source": "postmortem", "summary": "Postmortem Markdown Generated", "evidence": markdown_doc, "significance": "normal"}]
+    }

@@ -2,6 +2,7 @@ import uuid
 from langgraph.types import Command
 from ai_sre.graph import app
 
+
 def main():
     incident_id = f"INC-{uuid.uuid4().hex[:6]}"
     sample_alert = {
@@ -10,7 +11,7 @@ def main():
         "threshold": "5%",
         "current_value": "24.5%",
         "timestamp": "2026-10-19T10:30:00Z",
-        "message": "High rate of 500 errors observed after v2.4.1 rollout"
+        "message": "High rate of 500 errors observed after v2.4.1 rollout",
     }
 
     initial_state = {
@@ -25,41 +26,93 @@ def main():
         "approval_status": "pending",
         "execution_result": None,
         "recovery_verified": False,
-        "timeline": [f"[System] Incident created for {sample_alert['service']}"]
+        "timeline": [f"[System] Incident created for {sample_alert['service']}"],
     }
 
-    # Thread config tracks the execution snapshot in the checkpointer
     config = {"configurable": {"thread_id": incident_id}}
 
-    print("--- STEP 1: Running Graph Until Human Approval Interrupt ---")
-    state = app.invoke(initial_state, config=config)
+    print("=" * 60)
+    print(f" STARTING INCIDENT PIPELINE [{incident_id}]")
+    print("=" * 60)
 
-    # Check the state of the graph
-    current_snapshot = app.get_state(config)
-    print("\n[Graph Paused]")
-    print(f"Next Node to Execute: {current_snapshot.next}")
-    
-    if current_snapshot.tasks and current_snapshot.tasks[0].interrupts:
-        interrupt_payload = current_snapshot.tasks[0].interrupts[0].value
-        print("\nInterrupt Payload from Agent:")
-        print(f"  Message: {interrupt_payload['message']}")
-        for action in interrupt_payload["proposed_actions"]:
-            print(f"  Action: {action['action_type']} on {action['target_service']} (Risk: {action['risk_level']})")
-            print(f"  Parameters: {action['parameters']}")
-            print(f"  Expected Effect: {action['expected_effect']}")
+    # 1. Run the graph until the interrupt pauses it
+    app.invoke(initial_state, config=config)
 
-    print("\n--- STEP 2: Human Resumes Graph with Approval ---")
-    # Resume by sending a Command back to the same thread
-    resumed_state = app.invoke(
-        Command(resume={"status": "approved", "action": interrupt_payload["proposed_actions"][0]}),
-        config=config
-    )
+    # 2. Inspect the graph checkpoint
+    snapshot = app.get_state(config)
 
-    print("\n=== FINAL TIMELINE AFTER RESUME ===")
-    for event in resumed_state["timeline"]:
+    # Check if the graph is waiting at the human gate
+    if not snapshot.tasks or not snapshot.tasks[0].interrupts:
+        print("Graph finished without requiring approval.")
+        return
+
+    interrupt_data = snapshot.tasks[0].interrupts[0].value
+    proposed_actions = interrupt_data.get("proposed_actions", [])
+
+    print("\n🛑 AGENT PAUSED: HUMAN APPROVAL REQUIRED")
+    print("-" * 60)
+    print(f"Message: {interrupt_data.get('message')}")
+    print("\nProposed Actions from Remediation Planner:")
+    for idx, act in enumerate(proposed_actions, start=1):
+        print(f"\n[{idx}] Action    : {act['action_type']}")
+        print(f"    Service   : {act['target_service']}")
+        print(f"    Risk Level: {act['risk_level'].upper()}")
+        print(f"    Parameters: {act['parameters']}")
+        print(f"    Expected  : {act['expected_effect']}")
+
+    print("\n" + "-" * 60)
+    print("Choose an option:")
+    print("  [1-N] Approve a specific action by number")
+    print("  [r]   Reject all actions (proceed directly to postmortem)")
+    print("-" * 60)
+
+    # 3. Read real human input from the terminal
+    user_choice = input("Enter choice: ").strip().lower()
+
+    if user_choice == "r":
+        resume_payload = {
+            "status": "rejected",
+            "action": None,
+        }
+        print("\n❌ Action rejected by Incident Commander.")
+    else:
+        try:
+            choice_idx = int(user_choice) - 1
+            if 0 <= choice_idx < len(proposed_actions):
+                selected_action = proposed_actions[choice_idx]
+                resume_payload = {
+                    "status": "approved",
+                    "action": selected_action,
+                }
+                print(
+                    f"\n✅ Approved Action: {selected_action['action_type']} on {selected_action['target_service']}"
+                )
+            else:
+                print("\nInvalid selection. Defaulting to rejection.")
+                resume_payload = {"status": "rejected", "action": None}
+        except ValueError:
+            print("\nInvalid input. Defaulting to rejection.")
+            resume_payload = {"status": "rejected", "action": None}
+
+    # 4. Resume the graph using the human choice
+    print("\nResuming graph execution...")
+    final_state = app.invoke(Command(resume=resume_payload), config=config)
+
+    print("\n" + "=" * 60)
+    print("📋 FINAL INCIDENT TIMELINE")
+    print("=" * 60)
+    for event in final_state["timeline"]:
         print(event)
-    print(f"\nFinal Approval Status: {resumed_state['approval_status']}")
-    print(f"Approved Action       : {resumed_state['approved_action']}")
+
+    # Display postmortem
+    postmortem = next(
+        (f for f in final_state["findings"] if f["source"] == "postmortem"), None
+    )
+    if postmortem:
+        print("\n" + "=" * 60)
+        print(postmortem["evidence"])
+        print("=" * 60)
+
 
 if __name__ == "__main__":
     main()

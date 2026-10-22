@@ -9,7 +9,16 @@ from ai_sre.nodes import (
   deploy_investigator_node, 
   diagnosis_node,
   remediation_planner_node,
-  human_approval_node)
+  human_approval_node,
+  executor_node,
+  postmortem_node)
+
+def approval_router(state:IncidentState) -> str:
+  """routes based on human gate decision."""
+  if state.get("approval_status") == "approved":
+    return "executor"
+  return "postmortem"
+
 
 # initialize graph with state schema
 workflow = StateGraph(IncidentState)
@@ -23,6 +32,8 @@ workflow.add_node("deploy_investigator", deploy_investigator_node)
 workflow.add_node("diagnosis", diagnosis_node)
 workflow.add_node("remediation_planner", remediation_planner_node)
 workflow.add_node("human_approval", human_approval_node)
+workflow.add_node("executor", executor_node)
+workflow.add_node("postmortem", postmortem_node)
 
 # connect the nodes with edges
 
@@ -41,7 +52,18 @@ workflow.add_edge("deploy_investigator", "diagnosis")
 
 workflow.add_edge("diagnosis", "remediation_planner")
 workflow.add_edge("remediation_planner", "human_approval")
-workflow.add_edge("human_approval", END)
+
+workflow.add_conditional_edges(
+  "human_approval",
+  approval_router,
+  {
+    "executor":"executor",
+    "postmortem":"postmortem"
+  }
+)
+
+workflow.add_edge("executor", "postmortem")
+workflow.add_edge("postmortem", END)
 
 checkpointer = MemorySaver()
 app = workflow.compile(checkpointer=checkpointer)
