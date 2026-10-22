@@ -1,4 +1,4 @@
-from typing import Any, Dict, Literal
+from typing import Any, Dict, Literal, Optional
 from pydantic import BaseModel, Field
 from langgraph.types import interrupt
 from ai_sre.state import IncidentState
@@ -53,21 +53,29 @@ class InvestigationReport(BaseModel):
 def log_investigator_node(state: IncidentState) -> Dict[str, Any]:
     """Node: Inspects raw logs around the alert window."""
     service = state["alert"].get("service", "unknown")
-    raw_logs = query_logs(service=service)
+    targeted = state.get("targeted_queries", [])
+
+    # if targeted_queries exist, use latest filters
+    query_filter = targeted[-1] if targeted else ""
+    raw_logs = query_logs(service=service, query_filter=query_filter)
 
     llm = get_fast_llm().with_structured_output(InvestigationReport)
-    prompt = f"""You are an SRE Log Investigator.
-      Analyze these raw logs for service '{service}' during the incident window:
-      {raw_logs}
 
-      Extract any error patterns, exceptions, or anomalies as structured findings with exact evidence."""
+    prompt = f"""You are an SRE Log Investigator.
+        Service: '{service}'
+        Targeted Filter Applied: '{query_filter}'
+        Raw Logs:
+        {raw_logs}
+
+        Extract any error patterns, exceptions, or anomalies as structured findings with exact evidence."""
 
     report: InvestigationReport = llm.invoke(prompt)
-
     findings_data = [f.model_dump() for f in report.findings]
+    
+    label = f"[Log Investigator (Targeted: '{query_filter}')]" if query_filter else "[Log Investigator]"
     return {
         "findings": findings_data,
-        "timeline": [f"[Log Investigator] {report.agent_note} (Found {len(findings_data)} clues)"],
+        "timeline": [f"{label} {report.agent_note} (Found {len(findings_data)} clues)"],
     }
 
 
@@ -165,12 +173,18 @@ class Hypothesis(BaseModel):
 class DiagnosisReport(BaseModel):
    hypotheses: list[Hypothesis] = Field(description="Ranked list of root-cause hypotheses, highest confidence first")
    synthesis_summary: str = Field(description="Summary explaining how cross-source evidence correlates")
+   needs_more_data: bool = Field(description="True if top confidence is below 0.7 and targeted investigation is needed")
+   targeted_queries: Optional[list[str]] = Field(
+      default=None,
+      description="Specific follow-up queries or log filters if more data is needed"
+    )
 
 
 def diagnosis_node(state: IncidentState) -> Dict[str, Any]:
-   """Fan-In Node: Correlates cross-source findings into ranked root-cause hypotheses."""
+   """Fan-In Node: Correlates cross-source findings into ranked root-cause hypotheses; triggers targeted queries if confidence is low."""
    findings = state["findings"]
    alert = state["alert"]
+   current_loops = state.get("loop_count", 0)
    llm = get_reasoning_llm().with_structured_output(DiagnosisReport)
 
    prompt = f"""You are the lead SRE Incident Commander and Diagnostic specialist.
@@ -182,8 +196,10 @@ def diagnosis_node(state: IncidentState) -> Dict[str, Any]:
    Accumulated Evidence ({len(findings)} across logs, metricsc and deploys):
    {findings}
 
+   Current investigation iteration: {current_loops}
    Synthesize the evidence across sources. Correlate timestamps, error codes, and release changes.
-   Rank root cause hypotheses by confidence and link concrete supporting evidence to each.
+   Rank root cause hypotheses by confidence and link concrete supporting evidence to each
+   If top hypothesis confidence is < 0.70, set needs_more_data to True and supply 1-2 targeted_queries (e.g., specific log search terms or metric checks) to clarify root cause..
    """
 
    report: DiagnosisReport = llm.invoke(prompt)
@@ -193,8 +209,10 @@ def diagnosis_node(state: IncidentState) -> Dict[str, Any]:
 
    return {
         "hypotheses": hypotheses_data,
+        "targeted_queries": report.targeted_queries if report.needs_more_data else [],
+        "loop_count": current_loops + 1,
         "timeline": [
-            f"[Diagnosis] Synthesized {len(findings)} findings into {len(hypotheses_data)} ranked hypotheses. Top confidence: {top_confidence:.2f}"
+            f"[Diagnosis (Round {current_loops + 1})] Synthesized findings into {len(hypotheses_data)} hypotheses. Top confidence: {top_confidence:.2f} (Needs more data: {report.needs_more_data})"
         ]
     }
 

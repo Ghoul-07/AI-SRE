@@ -21,6 +21,8 @@ def main():
         "category": None,
         "findings": [],
         "hypotheses": [],
+        "loop_count":0,
+        "targeted_queries":[],
         "proposed_actions": [],
         "approved_action": None,
         "approval_status": "pending",

@@ -13,6 +13,20 @@ from ai_sre.nodes import (
   executor_node,
   postmortem_node)
 
+def diagnosis_confidence_router(state: IncidentState) -> str:
+    """
+    Conditional Edge: Checks if confidence is high enough to proceed to remediation.
+    Caps investigation loop at 2 iterations per PRD Section 6.2 Step 4.
+    """
+    hypotheses = state.get("hypotheses", [])
+    top_confidence = hypotheses[0]["confidence"] if hypotheses else 0.0
+    loop_count = state.get("loop_count", 0)
+
+    # If confidence is below threshold and we haven't hit loop cap, loop back
+    if top_confidence < 0.70 and loop_count < 2:
+        return "reinvestigate"
+    return "remediation_planner"
+
 def approval_router(state:IncidentState) -> str:
   """routes based on human gate decision."""
   if state.get("approval_status") == "approved":
@@ -50,7 +64,15 @@ workflow.add_edge("log_investigator", "diagnosis")
 workflow.add_edge("metrics_investigator", "diagnosis")
 workflow.add_edge("deploy_investigator", "diagnosis")
 
-workflow.add_edge("diagnosis", "remediation_planner")
+workflow.add_conditional_edges(
+  "diagnosis",
+  diagnosis_confidence_router,
+  {
+    "reinvestigate": "log_investigator",
+    "remediation_planner":"remediation_planner"
+  }
+)
+
 workflow.add_edge("remediation_planner", "human_approval")
 
 workflow.add_conditional_edges(

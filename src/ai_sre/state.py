@@ -18,6 +18,10 @@ class IncidentState(TypedDict):
   findings: Annotated[List[Dict[str, Any]], append_list]
   hypotheses: Annotated[List[Dict[str, Any]], append_list]
 
+  # Loop tracking and targeted follow up queries
+  loop_count: int
+  targeted_queries: List[str]
+
   # Action and human approval gate
   proposed_actions: List[Dict[str, Any]]
   approved_action: Optional[Dict[str, Any]]
@@ -29,5 +33,5 @@ class IncidentState(TypedDict):
   
   # Audit trail & token tracking
   timeline: Annotated[List[str], append_list]
-  cost: Dict[str, int]
+  
 
