@@ -1,127 +1,116 @@
+import os
 import uuid
+from psycopg_pool import ConnectionPool
+from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.types import Command
-from ai_sre.graph import app
+from dotenv import load_dotenv
+
+from ai_sre.graph import build_workflow, DATABASE_URL
+
+load_dotenv()
 
 
 def main():
-    incident_id = f"INC-{uuid.uuid4().hex[:6]}"
-    # sample_alert = {
-    #     "service": "checkout-service",
-    #     "metric": "http_5xx_rate",
-    #     "threshold": "5%",
-    #     "current_value": "24.5%",
-    #     "timestamp": "2026-10-19T10:30:00Z",
-    #     "message": "High rate of 500 errors observed after v2.4.1 rollout",
-    # }
-    sample_alert = {
-        "service": "checkout-service",
-        "metric": "latency_jitter",
-        "threshold": "unknown",
-        "current_value": "sporadic spikes",
-        "timestamp": "2026-10-19T10:30:00Z",
-        "message": "Occasional latency reported by edge router; cause unclear."
-    }
+    # Persistent connection pool to Postgres
+    connection_kwargs = {"autocommit": True, "prepare_threshold": 0}
+    
+    with ConnectionPool(conninfo=DATABASE_URL, kwargs=connection_kwargs) as pool:
+        checkpointer = PostgresSaver(pool)
+        # Initializes checkpointer schema and tables if they don't exist
+        checkpointer.setup()
 
-    initial_state = {
-        "incident_id": incident_id,
-        "alert": sample_alert,
-        "severity": "",
-        "category": None,
-        "findings": [],
-        "hypotheses": [],
-        "loop_count":0,
-        "targeted_queries":[],
-        "proposed_actions": [],
-        "approved_action": None,
-        "approval_status": "pending",
-        "execution_result": None,
-        "recovery_verified": False,
-        "timeline": [f"[System] Incident created for {sample_alert['service']}"],
-    }
+        # Compile graph with Postgres checkpointer
+        workflow = build_workflow()
+        app = workflow.compile(checkpointer=checkpointer)
 
-    config = {"configurable": {"thread_id": incident_id}}
+        print("Select Mode:")
+        print("  [1] Start New Incident Alert Run")
+        print("  [2] Resume an Existing Incident from Postgres by ID")
+        mode = input("Choice (1 or 2): ").strip()
 
-    print("=" * 60)
-    print(f" STARTING INCIDENT PIPELINE [{incident_id}]")
-    print("=" * 60)
+        if mode == "1":
+            incident_id = f"INC-{uuid.uuid4().hex[:6]}"
+            sample_alert = {
+                "service": "checkout-service",
+                "metric": "http_5xx_rate",
+                "threshold": "5%",
+                "current_value": "24.5%",
+                "timestamp": "2026-10-19T10:30:00Z",
+                "message": "High rate of 500 errors observed after v2.4.1 rollout",
+            }
 
-    # 1. Run the graph until the interrupt pauses it
-    app.invoke(initial_state, config=config)
+            initial_state = {
+                "incident_id": incident_id,
+                "alert": sample_alert,
+                "severity": "",
+                "category": None,
+                "findings": [],
+                "hypotheses": [],
+                "loop_count": 0,
+                "targeted_queries": [],
+                "proposed_actions": [],
+                "approved_action": None,
+                "approval_status": "pending",
+                "execution_result": None,
+                "recovery_verified": False,
+                "timeline": [f"[System] Incident created for {sample_alert['service']}"],
+            }
 
-    # 2. Inspect the graph checkpoint
-    snapshot = app.get_state(config)
+            config = {"configurable": {"thread_id": incident_id}}
 
-    # Check if the graph is waiting at the human gate
-    if not snapshot.tasks or not snapshot.tasks[0].interrupts:
-        print("Graph finished without requiring approval.")
-        return
+            print("\n" + "=" * 60)
+            print(f"🚨 STARTING NEW INCIDENT: {incident_id}")
+            print("=" * 60)
 
-    interrupt_data = snapshot.tasks[0].interrupts[0].value
-    proposed_actions = interrupt_data.get("proposed_actions", [])
+            # Runs until human interrupt
+            app.invoke(initial_state, config=config)
 
-    print("\n🛑 AGENT PAUSED: HUMAN APPROVAL REQUIRED")
-    print("-" * 60)
-    print(f"Message: {interrupt_data.get('message')}")
-    print("\nProposed Actions from Remediation Planner:")
-    for idx, act in enumerate(proposed_actions, start=1):
-        print(f"\n[{idx}] Action    : {act['action_type']}")
-        print(f"    Service   : {act['target_service']}")
-        print(f"    Risk Level: {act['risk_level'].upper()}")
-        print(f"    Parameters: {act['parameters']}")
-        print(f"    Expected  : {act['expected_effect']}")
+            print(f"\n✅ Graph reached interrupt and state is persisted in Postgres!")
+            print(f"Incident ID / Thread ID: {incident_id}")
+            print("You can kill this process now or choose to resume it immediately.")
 
-    print("\n" + "-" * 60)
-    print("Choose an option:")
-    print("  [1-N] Approve a specific action by number")
-    print("  [r]   Reject all actions (proceed directly to postmortem)")
-    print("-" * 60)
+        elif mode == "2":
+            incident_id = input("Enter Incident Thread ID to resume (e.g., INC-xxxxxx): ").strip()
+            config = {"configurable": {"thread_id": incident_id}}
 
-    # 3. Read real human input from the terminal
-    user_choice = input("Enter choice: ").strip().lower()
+        else:
+            print("Invalid option.")
+            return
 
-    if user_choice == "r":
-        resume_payload = {
-            "status": "rejected",
-            "action": None,
-        }
-        print("\n❌ Action rejected by Incident Commander.")
-    else:
-        try:
-            choice_idx = int(user_choice) - 1
-            if 0 <= choice_idx < len(proposed_actions):
-                selected_action = proposed_actions[choice_idx]
-                resume_payload = {
-                    "status": "approved",
-                    "action": selected_action,
-                }
-                print(
-                    f"\n✅ Approved Action: {selected_action['action_type']} on {selected_action['target_service']}"
-                )
-            else:
-                print("\nInvalid selection. Defaulting to rejection.")
-                resume_payload = {"status": "rejected", "action": None}
-        except ValueError:
-            print("\nInvalid input. Defaulting to rejection.")
+        # Check snapshot stored in Postgres
+        snapshot = app.get_state(config)
+        if not snapshot.tasks or not snapshot.tasks[0].interrupts:
+            print("Graph is not waiting at an approval gate.")
+            return
+
+        interrupt_data = snapshot.tasks[0].interrupts[0].value
+        proposed_actions = interrupt_data.get("proposed_actions", [])
+
+        print("\n" + "-" * 60)
+        print(f"🛑 LOADED FROM POSTGRES: HUMAN APPROVAL REQUIRED FOR {incident_id}")
+        print("-" * 60)
+        for idx, act in enumerate(proposed_actions, start=1):
+            print(f"[{idx}] {act['action_type']} on {act['target_service']} (Risk: {act['risk_level']})")
+
+        choice = input("\nEnter action number to approve, or 'r' to reject: ").strip().lower()
+
+        if choice == "r":
             resume_payload = {"status": "rejected", "action": None}
+        else:
+            try:
+                selected_action = proposed_actions[int(choice) - 1]
+                resume_payload = {"status": "approved", "action": selected_action}
+            except (ValueError, IndexError):
+                resume_payload = {"status": "rejected", "action": None}
 
-    # 4. Resume the graph using the human choice
-    print("\nResuming graph execution...")
-    final_state = app.invoke(Command(resume=resume_payload), config=config)
+        print("\nResuming from Postgres checkpoint...")
+        final_state = app.invoke(Command(resume=resume_payload), config=config)
 
-    print("\n" + "=" * 60)
-    print("📋 FINAL INCIDENT TIMELINE")
-    print("=" * 60)
-    for event in final_state["timeline"]:
-        print(event)
-
-    # Display postmortem
-    postmortem = next(
-        (f for f in final_state["findings"] if f["source"] == "postmortem"), None
-    )
-    if postmortem:
         print("\n" + "=" * 60)
-        print(postmortem["evidence"])
+        print("📋 FINAL TIMELINE (RECOVERED & COMPLETED)")
         print("=" * 60)
+        for event in final_state["timeline"]:
+            print(event)
 
 
 if __name__ == "__main__":

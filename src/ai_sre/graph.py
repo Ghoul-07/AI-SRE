@@ -1,5 +1,8 @@
+import os
+from dotenv import load_dotenv
+from psycopg_pool import ConnectionPool
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.postgres import PostgresSaver
 from ai_sre.state import IncidentState
 from ai_sre.nodes import (
   intake_node, 
@@ -12,6 +15,11 @@ from ai_sre.nodes import (
   human_approval_node,
   executor_node,
   postmortem_node)
+
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL",
+"postgresql://sre_admin:sre_secret@localhost:5432/ai_sre_db")
 
 def diagnosis_confidence_router(state: IncidentState) -> str:
     """
@@ -34,59 +42,59 @@ def approval_router(state:IncidentState) -> str:
   return "postmortem"
 
 
-# initialize graph with state schema
-workflow = StateGraph(IncidentState)
+def build_workflow() -> StateGraph:
+  """Constructs and returns the uncompiled workflow"""
+  workflow = StateGraph(IncidentState)
 
-# register the nodes
-workflow.add_node("intake", intake_node)
-workflow.add_node("triage", triage_node)
-workflow.add_node("log_investigator", log_investigator_node)
-workflow.add_node("metrics_investigator", metrics_investigator_node)
-workflow.add_node("deploy_investigator", deploy_investigator_node)
-workflow.add_node("diagnosis", diagnosis_node)
-workflow.add_node("remediation_planner", remediation_planner_node)
-workflow.add_node("human_approval", human_approval_node)
-workflow.add_node("executor", executor_node)
-workflow.add_node("postmortem", postmortem_node)
+  # register the nodes
+  workflow.add_node("intake", intake_node)
+  workflow.add_node("triage", triage_node)
+  workflow.add_node("log_investigator", log_investigator_node)
+  workflow.add_node("metrics_investigator", metrics_investigator_node)
+  workflow.add_node("deploy_investigator", deploy_investigator_node)
+  workflow.add_node("diagnosis", diagnosis_node)
+  workflow.add_node("remediation_planner", remediation_planner_node)
+  workflow.add_node("human_approval", human_approval_node)
+  workflow.add_node("executor", executor_node)
+  workflow.add_node("postmortem", postmortem_node)
 
-# connect the nodes with edges
+  # connect the nodes with edges
 
-workflow.add_edge(START, "intake")
-workflow.add_edge("intake", "triage")
+  workflow.add_edge(START, "intake")
+  workflow.add_edge("intake", "triage")
 
-# Fan-out: triage triggers all 3 investigators concurrently
-workflow.add_edge("triage", "log_investigator")
-workflow.add_edge("triage", "metrics_investigator")
-workflow.add_edge("triage", "deploy_investigator")
+  # Fan-out: triage triggers all 3 investigators concurrently
+  workflow.add_edge("triage", "log_investigator")
+  workflow.add_edge("triage", "metrics_investigator")
+  workflow.add_edge("triage", "deploy_investigator")
 
-# Fan-in: All 3 investigators merge in diagnosis
-workflow.add_edge("log_investigator", "diagnosis")
-workflow.add_edge("metrics_investigator", "diagnosis")
-workflow.add_edge("deploy_investigator", "diagnosis")
+  # Fan-in: All 3 investigators merge in diagnosis
+  workflow.add_edge("log_investigator", "diagnosis")
+  workflow.add_edge("metrics_investigator", "diagnosis")
+  workflow.add_edge("deploy_investigator", "diagnosis")
 
-workflow.add_conditional_edges(
-  "diagnosis",
-  diagnosis_confidence_router,
-  {
-    "reinvestigate": "log_investigator",
-    "remediation_planner":"remediation_planner"
-  }
-)
+  workflow.add_conditional_edges(
+    "diagnosis",
+    diagnosis_confidence_router,
+    {
+      "reinvestigate": "log_investigator",
+      "remediation_planner":"remediation_planner"
+    }
+  )
 
-workflow.add_edge("remediation_planner", "human_approval")
+  workflow.add_edge("remediation_planner", "human_approval")
 
-workflow.add_conditional_edges(
-  "human_approval",
-  approval_router,
-  {
-    "executor":"executor",
-    "postmortem":"postmortem"
-  }
-)
+  workflow.add_conditional_edges(
+    "human_approval",
+    approval_router,
+    {
+      "executor":"executor",
+      "postmortem":"postmortem"
+    }
+  )
 
-workflow.add_edge("executor", "postmortem")
-workflow.add_edge("postmortem", END)
+  workflow.add_edge("executor", "postmortem")
+  workflow.add_edge("postmortem", END)
 
-checkpointer = MemorySaver()
-app = workflow.compile(checkpointer=checkpointer)
+  return workflow
 
